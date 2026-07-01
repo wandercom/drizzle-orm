@@ -3,8 +3,8 @@ import 'zx/globals';
 import cpy from 'cpy';
 
 await fs.remove('dist');
-await $`rollup --config rollup.config.ts --configPlugin typescript`;
-await $`resolve-tspaths`;
+await $`pnpm exec rollup --config rollup.config.ts --configPlugin typescript`;
+await $`pnpm exec resolve-tspaths`;
 await fs.copy('README.md', 'dist/README.md');
 await cpy('dist/**/*.d.ts', 'dist', {
 	rename: (basename) => basename.replace(/\.d\.ts$/, '.d.mts'),

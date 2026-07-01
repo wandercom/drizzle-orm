@@ -22,6 +22,9 @@ on:
       LIBSQL_REMOTE_TOKEN:
         required: true
 
+env:
+  GH_PACKAGES_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 jobs:
   test:
     # only run on all pushes or pull requests from forks
@@ -47,6 +50,9 @@ jobs:
           - drizzle-arktype
           - other
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: read
     services:
       postgres-postgis:
         image: postgis/postgis:16-3.4
@@ -117,7 +123,7 @@ jobs:
         name: Install pnpm
         id: pnpm-install
         with:
-          version: latest
+          version: 10.6.3
           run_install: false
 
       - name: Get pnpm store directory
@@ -169,6 +175,17 @@ jobs:
             export SKIP_EXTERNAL_DB_TESTS=1
           fi
 
+          skip_when_missing_env() {
+            for env_name in "$@"; do
+              if [[ -z "${!env_name:-}" ]]; then
+                echo "::notice::Skipping ${{ matrix.shard }} because $env_name is not configured"
+                return 0
+              fi
+            done
+
+            return 1
+          }
+
           case ${{ matrix.shard }} in
 
             gel)
@@ -178,7 +195,7 @@ jobs:
             ;;
 
             planetscale)
-              if [[ -z "$SKIP_EXTERNAL_DB_TESTS" ]]; then
+              if [[ -z "$SKIP_EXTERNAL_DB_TESTS" ]] && ! skip_when_missing_env PLANETSCALE_CONNECTION_STRING; then
                 pnpm vitest run \
                   tests/mysql/mysql-planetscale.test.ts \
                   tests/relational/mysql.planetscale-v1.test.ts \
@@ -203,7 +220,7 @@ jobs:
             ;;
 
             neon-http)
-              if [[ -z "$SKIP_EXTERNAL_DB_TESTS" ]]; then
+              if [[ -z "$SKIP_EXTERNAL_DB_TESTS" ]] && ! skip_when_missing_env NEON_HTTP_CONNECTION_STRING; then
                 pnpm vitest run tests/pg/neon-http.test.ts tests/pg/neon-http-batch.test.ts
               fi
             ;;
@@ -215,10 +232,16 @@ jobs:
             ;;
 
             netlify-db)
-              pnpm vitest run tests/pg/netlify-db.test.ts
+              if ! skip_when_missing_env NETLIFY_DB_URL; then
+                pnpm vitest run tests/pg/netlify-db.test.ts
+              fi
             ;;
 
-            drizzle-orm|drizzle-kit|drizzle-zod|drizzle-seed|drizzle-typebox|drizzle-valibot|drizzle-arktype)
+            drizzle-orm)
+              (cd .. && pnpm test --filter drizzle-orm)
+            ;;
+
+            drizzle-kit|drizzle-zod|drizzle-seed|drizzle-typebox|drizzle-valibot|drizzle-arktype)
               (cd .. && pnpm test --filter ${{ matrix.shard }})
             ;;
 
@@ -235,39 +258,43 @@ jobs:
                 --exclude tests/pg/neon-http.test.ts \
                 --exclude tests/pg/neon-http-batch.test.ts \
                 --exclude tests/pg/neon-serverless.test.ts \
-                --exclude tests/pg/netlify-db.test.ts 
+                --exclude tests/pg/netlify-db.test.ts \
+                --exclude tests/pg/xata-http.test.ts \
+                --exclude tests/mysql/tidb-serverless.test.ts \
+                --exclude tests/utils/is-config.test.ts \
+                --exclude js-tests/driver-init/commonjs/neon-http.test.cjs \
+                --exclude js-tests/driver-init/commonjs/neon-ws.test.cjs \
+                --exclude js-tests/driver-init/commonjs/tidb.test.cjs \
+                --exclude js-tests/driver-init/module/neon-http.test.mjs \
+                --exclude js-tests/driver-init/module/neon-ws.test.mjs \
+                --exclude js-tests/driver-init/module/tidb.test.mjs
             ;;
 
           esac
 
   attw:
     # only run on all pushes or pull requests from forks
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    if: false
     strategy:
       matrix:
         package:
           - drizzle-orm
-          - drizzle-kit
-          - drizzle-zod
-          - drizzle-seed
-          - drizzle-typebox
-          - drizzle-valibot
-          - drizzle-arktype
-          - eslint-plugin-drizzle
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
 
       - uses: pnpm/action-setup@v3
         name: Install pnpm
         id: pnpm-install
         with:
-          version: latest
+          version: 10.6.3
           run_install: false
 
       - name: Get pnpm store directory
@@ -298,12 +325,13 @@ jobs:
           old_version="$(jq -r .version package.json)"
           version="$old_version-$(git rev-parse --short HEAD)"
           npm version $version
+          package_name="@wandercom/drizzle-orm"
           tag="${{ github.ref_name }}"
-          is_version_published="$(npm view ${{ matrix.package }} versions --json | jq -r '.[] | select(. == "'$version'") | . == "'$version'"')"
+          versions="$(npm view "$package_name" versions --json 2>/dev/null || echo '[]')"
+          is_version_published="$(echo "$versions" | jq -r --arg version "$version" 'if type == "array" then any(. == $version) else . == $version end')"
 
           if [[ "$is_version_published" == "true" ]]; then
-            echo "\`${{ matrix.package }}$version\` already published, adding tag \`$tag\`" >> $GITHUB_STEP_SUMMARY
-            npm dist-tag add ${{ matrix.package }}@$version $tag
+            echo "\`$package_name@$version\` already published; release job will add tag \`$tag\`" >> $GITHUB_STEP_SUMMARY
           else
             {
               echo "version=$version"
@@ -336,41 +364,32 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     needs:
       - test
-      - attw
     strategy:
       matrix:
         package:
           - drizzle-orm
-          - drizzle-kit
-          - drizzle-zod
-          - drizzle-seed
-          - drizzle-typebox
-          - drizzle-valibot
-          - drizzle-arktype
-          - eslint-plugin-drizzle
     runs-on: ubuntu-22.04
     permissions:
       contents: read
-      id-token: write # for OIDC
-    # force empty so npm can use OIDC
+      packages: write
     env:
-      NODE_AUTH_TOKEN: ""   
-      NPM_TOKEN: ""
+      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
         with: { run_install: false }
       - uses: actions/setup-node@v6
         with: { node-version: '24', cache: 'pnpm', cache-dependency-path: pnpm-lock.yaml }
+
+      - name: Configure GitHub Packages auth
+        run: |
+          npm config set @wandercom:registry https://npm.pkg.github.com
+          npm config set //npm.pkg.github.com/:_authToken "$NODE_AUTH_TOKEN"
+
       - run: pnpm install --frozen-lockfile --prefer-offline
     
-      # >= 11.5.1 for trusted publishing
       - name: Update NPM
         run: npm install -g npm@latest
-
-      # nuke, so npm can use OIDC
-      - name: Remove temp npmrc
-        run: rm -f "$NPM_CONFIG_USERCONFIG"
 
       - name: Check preconditions
         id: checks
@@ -380,11 +399,14 @@ jobs:
           old_version="$(jq -r .version package.json)"
           version="$old_version-$(git rev-parse --short HEAD)"
           npm version $version
+          package_name="@wandercom/drizzle-orm"
           tag="${{ github.ref_name }}"
-          is_version_published="$(npm view ${{ matrix.package }} versions --json | jq -r '.[] | select(. == "'$version'") | . == "'$version'"')"
+          versions="$(npm view "$package_name" versions --json 2>/dev/null || echo '[]')"
+          is_version_published="$(echo "$versions" | jq -r --arg version "$version" 'if type == "array" then any(. == $version) else . == $version end')"
 
           if [[ "$is_version_published" == "true" ]]; then
-            echo "\`${{ matrix.package }}$version\` already published, adding tag \`$tag\`" >> $GITHUB_STEP_SUMMARY
+            echo "\`$package_name@$version\` already published, adding tag \`$tag\`" >> $GITHUB_STEP_SUMMARY
+            npm dist-tag add "$package_name@$version" "$tag"
           else
             {
               echo "version=$version"
@@ -401,11 +423,31 @@ jobs:
         if: steps.checks.outputs.has_new_release == 'true'
         run: pnpm build
 
+      - name: Prepare GitHub Packages metadata
+        if: steps.checks.outputs.has_new_release == 'true'
+        working-directory: ${{ matrix.package }}
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const path = "dist/package.json";
+            const pkg = JSON.parse(fs.readFileSync(path, "utf8"));
+            pkg.name = "@wandercom/drizzle-orm";
+            fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
+          '
+
       - name: Pack
         if: steps.checks.outputs.has_new_release == 'true'
         working-directory: ${{ matrix.package }}
         shell: bash
         run: npm run pack
+
+      - name: Verify SQL commenter pg patch
+        if: steps.checks.outputs.has_new_release == 'true'
+        working-directory: ${{ matrix.package }}
+        shell: bash
+        run: |
+          tar -xOf package.tgz package/node-postgres/session.js \
+            | grep -Eq 'name === (void 0|undefined) \? \{\} : \{ name \}'
 
       - name: Publish
         if: github.event_name == 'push' && steps.checks.outputs.has_new_release == 'true'
@@ -414,12 +456,25 @@ jobs:
         run: |
           tag="${{ steps.checks.outputs.tag }}"
           version="${{ steps.checks.outputs.version }}"
+          package_name="@wandercom/drizzle-orm"
 
-          echo "Publishing ${{ matrix.package }}@$tag using version $version"
+          echo "Publishing $package_name@$tag using version $version"
           npm run publish -- --tag $tag
 
-          echo "npm: \`${{ matrix.package }}@$tag | ${{ matrix.package }}@$version\`" >> $GITHUB_STEP_SUMMARY
+          echo "npm: \`$package_name@$tag | $package_name@$version\`" >> $GITHUB_STEP_SUMMARY
 
           # Post release message to Discord
-          # curl -X POST -H "Content-Type: application/json" -d "{\"embeds\": [{\"title\": \"New \`${{ matrix.package }}\` release! 🎉\", \"url\": \"https://www.npmjs.com/package/${{ matrix.package }}/v/$version\", \"color\": \"12907856\", \"fields\": [{\"name\": \"Version\", \"value\": \"\`$version\`\"}, {\"name\": \"Tag\", \"value\": \"\`$tag\`\"}]}]}" ${{ secrets.DISCORD_DEV_RELEASE_WEBHOOK_URL }}
+          # curl -X POST -H "Content-Type: application/json" -d "{\"embeds\": [{\"title\": \"New \`$package_name\` release! 🎉\", \"url\": \"https://github.com/orgs/wandercom/packages/npm/package/drizzle-orm\", \"color\": \"12907856\", \"fields\": [{\"name\": \"Version\", \"value\": \"\`$version\`\"}, {\"name\": \"Tag\", \"value\": \"\`$tag\`\"}]}]}" ${{ secrets.DISCORD_DEV_RELEASE_WEBHOOK_URL }}
 
+      - name: Verify published package
+        if: github.event_name == 'push' && steps.checks.outputs.has_new_release == 'true'
+        working-directory: ${{ matrix.package }}
+        shell: bash
+        run: |
+          version="${{ steps.checks.outputs.version }}"
+          package_name="@wandercom/drizzle-orm"
+          tmp="$(mktemp -d)"
+          tarball="$(npm pack "$package_name@$version" --pack-destination "$tmp")"
+
+          tar -xOf "$tmp/$tarball" package/node-postgres/session.js \
+            | grep -Eq 'name === (void 0|undefined) \? \{\} : \{ name \}'

@@ -17,11 +17,11 @@
 	"types": "./index.d.ts",
 	"sideEffects": false,
 	"publishConfig": {
-		"provenance": true
+		"registry": "https://npm.pkg.github.com"
 	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/drizzle-team/drizzle-orm.git"
+		"url": "git+https://github.com/wandercom/drizzle-orm.git"
 	},
 	"homepage": "https://orm.drizzle.team",
 	"keywords": [
